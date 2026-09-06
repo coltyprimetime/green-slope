@@ -42,73 +42,97 @@
 <div class="live" id="live"></div>
 <div class="wrap" id="wrap">
   <div class="dir" id="title">GREEN SLOPE</div>
-  <div class="note" id="msg">Set the glasses flat on the green,<br>front pointed at the hole.<br>Pinch when they're down.</div>
+  <div class="note" id="msg">Set the glasses on the green like<br>the ground is wearing them, lenses at the hole.<br>Pinch when they're down.</div>
   <div class="hint">Or on a phone: lay it flat, top toward the hole, tap.</div>
 </div>
 <script>
 (function () {
   'use strict';
-  var TILT = { beta: null, gamma: null, at: 0 };
+  // v2 (2026-09-06, from the course). v1 assumed a phone lying flat and read
+  // 687% for glasses set down upright — "like the ground is wearing them".
+  // Upright, the W3C Euler angles sit at beta≈90°, a singularity where gamma
+  // is meaningless. So v2 works from the GRAVITY VECTOR in the device frame
+  // and picks the pose by which axis gravity runs along:
+  //   flat (phone on its back)      → gravity along z
+  //   upright (glasses, worn pose)  → gravity along y
+  // Percent is exact either way. The two SIGNS (uphill/downhill, left/right)
+  // depend on how the hardware labels its axes, which cannot be verified
+  // from a desk — so both are flippable on the D-pad and remembered.
+  var G = { x: null, y: null, z: null, at: 0 };
   var live = document.getElementById('live');
   var wrap = document.getElementById('wrap');
   var armed = false;
+  var flip = { pitch: load('flipPitch'), brk: load('flipBreak') };
+
+  function load(k) { try { return localStorage.getItem(k) === '1'; } catch (e) { return false; } }
+  function save(k, v) { try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
 
   function say(text) {
     try {
       if (!('speechSynthesis' in window)) return;
       window.speechSynthesis.cancel();
-      var u = new SpeechSynthesisUtterance(text);
-      u.rate = 0.95;
+      var u = new SpeechSynthesisUtterance(text); u.rate = 0.95;
       window.speechSynthesis.speak(u);
-    } catch (e) { /* audio is a convenience; the screen is the record */ }
+    } catch (e) {}
   }
-
+  function stamp(x, y, z, src) {
+    G.x = x; G.y = y; G.z = z; G.at = Date.now();
+    live.textContent = 'sensor live (' + src + ')'; live.className = 'live ok';
+  }
+  // Preferred: the accelerometer's own gravity vector. No Euler angles at all.
+  function onMotion(e) {
+    var a = e.accelerationIncludingGravity;
+    if (!a || a.x === null || a.y === null || a.z === null) return;
+    stamp(a.x, a.y, a.z, 'motion');
+  }
+  // Fallback: rebuild the up-vector from beta/gamma. Third row of the W3C
+  // rotation Rz(a)Rx(b)Ry(g): (-cos b sin g, sin b, cos b cos g). Flat → z,
+  // upright → y. Alpha cancels, which is why no compass is needed.
   function onOrient(e) {
+    if (G.at && Date.now() - G.at < 800 && live.textContent.indexOf('motion') > -1) return;
     if (e.beta === null || e.gamma === null) return;
-    TILT.beta = e.beta; TILT.gamma = e.gamma; TILT.at = Date.now();
-    live.textContent = 'sensor live';
-    live.className = 'live ok';
+    var b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+    stamp(-Math.cos(b) * Math.sin(g), Math.sin(b), Math.cos(b) * Math.cos(g), 'orientation');
   }
 
-  // iPhone Safari gates the sensor behind a tap-time permission; the glasses
-  // and Android hand it over on listen. Both paths end at onOrient.
+  function listen() {
+    window.addEventListener('devicemotion', onMotion, true);
+    window.addEventListener('deviceorientation', onOrient, true);
+  }
   function arm() {
     if (armed) return Promise.resolve(true);
     armed = true;
-    var DOE = window.DeviceOrientationEvent;
-    if (DOE && typeof DOE.requestPermission === 'function') {
-      return DOE.requestPermission().then(function (s) {
-        if (s === 'granted') { window.addEventListener('deviceorientation', onOrient, true); return true; }
-        return false;
-      }).catch(function () { return false; });
-    }
-    window.addEventListener('deviceorientation', onOrient, true);
-    return Promise.resolve(true);
+    var DOE = window.DeviceOrientationEvent, DME = window.DeviceMotionEvent;
+    var asks = [];
+    if (DOE && typeof DOE.requestPermission === 'function') asks.push(DOE.requestPermission().catch(function () { return 'denied'; }));
+    if (DME && typeof DME.requestPermission === 'function') asks.push(DME.requestPermission().catch(function () { return 'denied'; }));
+    return Promise.all(asks).then(function () { listen(); return true; });
   }
 
-  // Device lying flat, its FRONT (top edge of a phone; the lens side of the
-  // glasses) toward the hole. beta = tilt about the left-right axis (positive
-  // = front edge raised = UPHILL toward the hole). gamma = tilt about the
-  // front-back axis (positive = right side raised = ball falls LEFT).
   function read() {
-    var age = Date.now() - TILT.at;
-    if (TILT.beta === null || age > 3000) {
-      show('--', '', 'No sensor reading yet.', 'If this stays, open the same link on your phone and lay the phone down instead.', true);
+    if (G.x === null || Date.now() - G.at > 3000) {
+      show('--', '', 'No sensor reading yet.', 'If this stays, open the same link on your phone and lay it flat.', true);
       say('No sensor reading yet. Try the phone.');
       return;
     }
-    var b = TILT.beta, g = TILT.gamma;
-    var pct = Math.tan(Math.sqrt(b * b + g * g) * Math.PI / 180) * 100;
-    var toward = Math.abs(b) < 0.4 ? 'flat to the hole' : (b > 0 ? 'uphill' : 'downhill');
-    var fall = Math.abs(g) < 0.4 ? 'no break' : (g > 0 ? 'breaks left' : 'breaks right');
-    var arrow = Math.abs(g) < 0.4 ? '•' : (g > 0 ? '⟵' : '⟶');
-    var line1 = pct.toFixed(1);
-    var line2 = (toward === 'flat to the hole' ? 'flat' : toward) + '  ·  ' + fall;
-    show(line1, '%', line2, arrow + '   at this spot only', false);
-    var spoken = pct < 0.5
-      ? 'Flat at this spot. Under half a percent.'
-      : line1 + ' percent, ' + toward + ', ' + fall + '. At this spot only.';
-    say(spoken);
+    var x = G.x, y = G.y, z = G.z;
+    var upright = Math.abs(y) >= Math.abs(z);
+    // along = tilt toward/away from the hole; across = tilt left/right.
+    // Upright, lenses toward the hole: hole direction is along z, sideways is x.
+    // Flat, top toward the hole: hole direction is along y, sideways is x.
+    var along = upright ? Math.atan2(z, Math.abs(y)) : Math.atan2(y, Math.abs(z));
+    var across = upright ? Math.atan2(x, Math.abs(y)) : Math.atan2(x, Math.abs(z));
+    if (flip.pitch) along = -along;
+    if (flip.brk) across = -across;
+    var pct = Math.sqrt(Math.tan(along) * Math.tan(along) + Math.tan(across) * Math.tan(across)) * 100;
+    var eps = 0.4 * Math.PI / 180;
+    var toward = Math.abs(along) < eps ? 'flat' : (along > 0 ? 'uphill' : 'downhill');
+    var fall = Math.abs(across) < eps ? 'no break' : (across > 0 ? 'breaks left' : 'breaks right');
+    var arrow = Math.abs(across) < eps ? '•' : (across > 0 ? '⟵' : '⟶');
+    show(pct.toFixed(1), '%', toward + '  ·  ' + fall,
+         arrow + '   at this spot only' + (upright ? '' : '  ·  phone flat'), false);
+    say(pct < 0.5 ? 'Flat at this spot. Under half a percent.'
+                  : pct.toFixed(1) + ' percent, ' + toward + ', ' + fall + '. At this spot only.');
   }
 
   function show(big, unit, dir, note, warn) {
@@ -116,23 +140,25 @@
       '<div class="big">' + big + (unit ? '<small>' + unit + '</small>' : '') + '</div>' +
       '<div class="dir' + (warn ? ' warn' : '') + '">' + dir + '</div>' +
       '<div class="note">' + note + '</div>' +
-      '<div class="hint">Pinch again to re-read · reposition and pinch for another spot</div>';
+      '<div class="hint">Pinch: read again · swipe left/right: flip break · swipe up/down: flip uphill</div>';
   }
 
   function trigger() { arm().then(read); }
-
-  // Pinch on the Neural Band arrives as Enter (and a synthetic click at 0,0);
-  // a phone tap arrives as a click. All roads lead to one read.
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); trigger(); }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); trigger(); return; }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault(); flip.brk = !flip.brk; save('flipBreak', flip.brk);
+      say('Break direction flipped.'); arm().then(read); return;
+    }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault(); flip.pitch = !flip.pitch; save('flipPitch', flip.pitch);
+      say('Uphill downhill flipped.'); arm().then(read);
+    }
   }, true);
   document.addEventListener('click', trigger, true);
-  document.getElementById('k').addEventListener('click', function (e) { e.stopPropagation(); trigger(); });
 
-  // Start listening immediately where no permission tap is required, so the
-  // first pinch already has a fresh reading behind it.
   var DOE = window.DeviceOrientationEvent;
-  if (!(DOE && typeof DOE.requestPermission === 'function')) arm();
+  if (!(DOE && typeof DOE.requestPermission === 'function')) { armed = true; listen(); }
   try { document.getElementById('k').focus(); } catch (e) {}
   live.textContent = 'waiting for sensor';
 })();
