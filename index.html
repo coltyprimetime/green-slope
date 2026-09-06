@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=600, height=600, initial-scale=1, user-scalable=no">
+<meta name="mrbd-web-app-capable" content="yes">
+<meta name="description" content="Green slope: set the glasses on the green pointed at the hole, hear the slope.">
+<title>Slope</title>
+<!-- GREEN SLOPE READER — Coleton, 2026-09-06, built on the course.
+     WHAT IT DOES: reads the motion sensor while the device lies FLAT on the
+     green with its front pointed at the hole, and speaks the slope: percent,
+     uphill/downhill toward the hole, and which way it falls (break left or
+     right). That is the same measurement a phone laid on the green makes.
+     WHAT IT DOES NOT DO: it does not know the green between you and the hole.
+     One spot, one reading. It says "at this spot" out loud on purpose.
+     WORKS ON: the Ray-Ban Display (DeviceOrientation is a supported web-app
+     API per Meta's build guide) AND a phone browser — same file, so the
+     phone is the fallback if the glasses ever stop reporting the sensor.
+     DISPLAY RULES: 600x600, #000 is transparent on the additive screen, big
+     high-contrast text, pinch = Enter, D-pad = arrows, no scrolling.
+     SECURITY: public origin, no token, no secret, nothing to protect. -->
+<style>
+  html, body { margin:0; padding:0; background:#000; }
+  body { width:600px; height:600px; overflow:hidden; padding:24px; box-sizing:border-box;
+         font-family:-apple-system,"Segoe UI",Roboto,sans-serif; color:#fff;
+         -webkit-font-smoothing:antialiased; touch-action:manipulation; user-select:none; }
+  .wrap { height:552px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+  .big { font-size:132px; font-weight:800; line-height:1; letter-spacing:-4px; }
+  .big small { font-size:56px; font-weight:700; letter-spacing:0; }
+  .dir { font-size:44px; font-weight:700; margin-top:10px; }
+  .note { font-size:22px; color:#c8d0dc; margin-top:18px; line-height:1.3; }
+  .hint { font-size:20px; color:#8a94a6; margin-top:26px; }
+  .arrow { font-size:96px; line-height:1; margin-top:4px; }
+  .warn { color:#ffd166; }
+  .ok { color:#7CFF9E; }
+  button { position:absolute; left:-9999px; }   /* focus target for Enter/pinch; never drawn */
+  .live { font-size:20px; color:#8a94a6; position:absolute; top:24px; right:24px; }
+</style>
+</head>
+<body>
+<button id="k" class="focusable" autofocus aria-label="read slope"></button>
+<div class="live" id="live"></div>
+<div class="wrap" id="wrap">
+  <div class="dir" id="title">GREEN SLOPE</div>
+  <div class="note" id="msg">Set the glasses flat on the green,<br>front pointed at the hole.<br>Pinch when they're down.</div>
+  <div class="hint">Or on a phone: lay it flat, top toward the hole, tap.</div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var TILT = { beta: null, gamma: null, at: 0 };
+  var live = document.getElementById('live');
+  var wrap = document.getElementById('wrap');
+  var armed = false;
+
+  function say(text) {
+    try {
+      if (!('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.95;
+      window.speechSynthesis.speak(u);
+    } catch (e) { /* audio is a convenience; the screen is the record */ }
+  }
+
+  function onOrient(e) {
+    if (e.beta === null || e.gamma === null) return;
+    TILT.beta = e.beta; TILT.gamma = e.gamma; TILT.at = Date.now();
+    live.textContent = 'sensor live';
+    live.className = 'live ok';
+  }
+
+  // iPhone Safari gates the sensor behind a tap-time permission; the glasses
+  // and Android hand it over on listen. Both paths end at onOrient.
+  function arm() {
+    if (armed) return Promise.resolve(true);
+    armed = true;
+    var DOE = window.DeviceOrientationEvent;
+    if (DOE && typeof DOE.requestPermission === 'function') {
+      return DOE.requestPermission().then(function (s) {
+        if (s === 'granted') { window.addEventListener('deviceorientation', onOrient, true); return true; }
+        return false;
+      }).catch(function () { return false; });
+    }
+    window.addEventListener('deviceorientation', onOrient, true);
+    return Promise.resolve(true);
+  }
+
+  // Device lying flat, its FRONT (top edge of a phone; the lens side of the
+  // glasses) toward the hole. beta = tilt about the left-right axis (positive
+  // = front edge raised = UPHILL toward the hole). gamma = tilt about the
+  // front-back axis (positive = right side raised = ball falls LEFT).
+  function read() {
+    var age = Date.now() - TILT.at;
+    if (TILT.beta === null || age > 3000) {
+      show('--', '', 'No sensor reading yet.', 'If this stays, open the same link on your phone and lay the phone down instead.', true);
+      say('No sensor reading yet. Try the phone.');
+      return;
+    }
+    var b = TILT.beta, g = TILT.gamma;
+    var pct = Math.tan(Math.sqrt(b * b + g * g) * Math.PI / 180) * 100;
+    var toward = Math.abs(b) < 0.4 ? 'flat to the hole' : (b > 0 ? 'uphill' : 'downhill');
+    var fall = Math.abs(g) < 0.4 ? 'no break' : (g > 0 ? 'breaks left' : 'breaks right');
+    var arrow = Math.abs(g) < 0.4 ? '•' : (g > 0 ? '⟵' : '⟶');
+    var line1 = pct.toFixed(1);
+    var line2 = (toward === 'flat to the hole' ? 'flat' : toward) + '  ·  ' + fall;
+    show(line1, '%', line2, arrow + '   at this spot only', false);
+    var spoken = pct < 0.5
+      ? 'Flat at this spot. Under half a percent.'
+      : line1 + ' percent, ' + toward + ', ' + fall + '. At this spot only.';
+    say(spoken);
+  }
+
+  function show(big, unit, dir, note, warn) {
+    wrap.innerHTML =
+      '<div class="big">' + big + (unit ? '<small>' + unit + '</small>' : '') + '</div>' +
+      '<div class="dir' + (warn ? ' warn' : '') + '">' + dir + '</div>' +
+      '<div class="note">' + note + '</div>' +
+      '<div class="hint">Pinch again to re-read · reposition and pinch for another spot</div>';
+  }
+
+  function trigger() { arm().then(read); }
+
+  // Pinch on the Neural Band arrives as Enter (and a synthetic click at 0,0);
+  // a phone tap arrives as a click. All roads lead to one read.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); trigger(); }
+  }, true);
+  document.addEventListener('click', trigger, true);
+  document.getElementById('k').addEventListener('click', function (e) { e.stopPropagation(); trigger(); });
+
+  // Start listening immediately where no permission tap is required, so the
+  // first pinch already has a fresh reading behind it.
+  var DOE = window.DeviceOrientationEvent;
+  if (!(DOE && typeof DOE.requestPermission === 'function')) arm();
+  try { document.getElementById('k').focus(); } catch (e) {}
+  live.textContent = 'waiting for sensor';
+})();
+</script>
+</body>
+</html>
